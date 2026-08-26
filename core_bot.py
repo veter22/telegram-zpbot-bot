@@ -22,8 +22,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.session.aiohttp import AiohttpSession
 
 # --- НАСТРОЙКИ ---
-TOKEN = os.getenv("BOT_TOKEN")
-SECRET_PATH = os.getenv("WEBHOOK_SECRET")
+TOKEN = "8741563337:AAF7q_JraT_-FdOghLOeS7Aos4Kehm31A6g"
+SECRET_PATH = '/webhook_a1b2c3d4e5'
 WEBHOOK_URL = f"https://veterr.pythonanywhere.com{SECRET_PATH}"
 
 app = Flask(__name__)
@@ -37,7 +37,7 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "income_v4.db")
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''CREATE TABLE IF NOT EXISTS income (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, amount REAL,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, amount REAL, 
                     category TEXT, payment_type TEXT, rate REAL, hours REAL, date TEXT)''')
 conn.commit()
 
@@ -53,6 +53,29 @@ class IncomeStates(StatesGroup):
     waiting_for_category = State()
     waiting_for_stats_date = State()
     waiting_for_delete_id = State()
+    waiting_for_stats_month = State() # НОВОЕ: состояние для выбора месяца
+
+# --- БОТ-УБОРЩИК (ЭФФЕКТ ОДНОГО ОКНА) ---
+user_last_msg = {} 
+
+async def send_clean(message: Message, text: str, reply_markup=None):
+    user_id = message.from_user.id
+    bot = message.bot
+    
+    try:
+        await message.delete()
+    except:
+        pass
+        
+    if user_id in user_last_msg:
+        try:
+            await bot.delete_message(chat_id=user_id, message_id=user_last_msg[user_id])
+        except:
+            pass
+            
+    msg = await message.answer(text, reply_markup=reply_markup, parse_mode="HTML")
+    user_last_msg[user_id] = msg.message_id
+    return msg
 
 # --- КЛАВИАТУРЫ ---
 main_kb = ReplyKeyboardMarkup(
@@ -77,42 +100,16 @@ date_kb = ReplyKeyboardMarkup(
     ], resize_keyboard=True
 )
 
+# НОВОЕ: Обновленная клавиатура статистики
 stats_kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="📅 За этот месяц"), KeyboardButton(text="🌍 За все время")],
-        [KeyboardButton(text="🔍 На определенную дату"), KeyboardButton(text="📂 По категориям")],
+        [KeyboardButton(text="📅 Текущий месяц"), KeyboardButton(text="🌍 За все время")],
+        [KeyboardButton(text="🗓 Выбрать месяц"), KeyboardButton(text="🔍 На дату")],
         [KeyboardButton(text="🚫 Отмена")]
     ], resize_keyboard=True
 )
 
 cancel_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🚫 Отмена")]], resize_keyboard=True)
-
-# --- БОТ-УБОРЩИК (ЭФФЕКТ ОДНОГО ОКНА) ---
-user_last_msg = {} # Память для хранения ID последних сообщений бота
-
-async def clean_previous(message: Message):
-    user_id = message.from_user.id
-    bot = message.bot
-    
-    # 1. Удаляем сообщение юзера (то, что он написал или нажал)
-    try:
-        await message.delete()
-    except:
-        pass
-        
-    # 2. Удаляем прошлое сообщение бота (очищаем экран)
-    if user_id in user_last_msg:
-        try:
-            await bot.delete_message(chat_id=user_id, message_id=user_last_msg[user_id])
-        except:
-            pass
-
-async def send_clean(message: Message, text: str, reply_markup=None):
-    await clean_previous(message)
-    # Отправляем новое сообщение и запоминаем его ID
-    msg = await message.answer(text, reply_markup=reply_markup, parse_mode="HTML")
-    user_last_msg[message.from_user.id] = msg.message_id
-    return msg
 
 # --- БАЗОВЫЕ КОМАНДЫ ---
 @dp.message(Command("start"))
@@ -125,7 +122,7 @@ async def process_cancel(message: Message, state: FSMContext):
     await state.clear()
     await send_clean(message, "Действие отменено. Главное меню:", reply_markup=main_kb)
 
-# --- ТЕКСТОВОЕ НАДЕЖНОЕ УДАЛЕНИЕ ЗАПИСЕЙ ---
+# --- УДАЛЕНИЕ ЗАПИСЕЙ ---
 @dp.message(F.text == "🗑 Удалить запись")
 async def start_delete(message: Message, state: FSMContext):
     cursor.execute("SELECT id, amount, category, date FROM income WHERE user_id = ? ORDER BY id DESC LIMIT 5", (message.from_user.id,))
@@ -147,14 +144,14 @@ async def start_delete(message: Message, state: FSMContext):
 async def process_delete_id(message: Message, state: FSMContext):
     text = message.text.strip()
     if not text.isdigit():
-        await send_clean(message, "Пожалуйста, введите корректный числовой ID записи:", reply_markup=cancel_kb)
+        await send_clean(message, "Пожалуйста, введите корректный числовой ID записи:")
         return
 
     record_id = int(text)
 
     cursor.execute("SELECT id FROM income WHERE id = ? AND user_id = ?", (record_id, message.from_user.id))
     if not cursor.fetchone():
-        await send_clean(message, "Запись с таким ID не найдена в вашей базе. Попробуйте еще раз:", reply_markup=cancel_kb)
+        await send_clean(message, "Запись с таким ID не найдена. Попробуйте еще раз:")
         return
 
     cursor.execute("DELETE FROM income WHERE id = ? AND user_id = ?", (record_id, message.from_user.id))
@@ -180,9 +177,7 @@ async def export_csv(message: Message):
     bio = io.BytesIO(buf.getvalue().encode('utf-8-sig'))
     document = BufferedInputFile(bio.getvalue(), filename=f"finances_{datetime.now().strftime('%Y%m%d')}.csv")
 
-    await clean_previous(message)
-    msg = await message.answer_document(document, caption="📊 Ваша база данных готова! Откройте её в Excel.", reply_markup=main_kb)
-    user_last_msg[message.from_user.id] = msg.message_id
+    await message.answer_document(document, caption="📊 Ваша база данных готова! Откройте её в Excel.", reply_markup=main_kb)
 
 # --- ДОБАВЛЕНИЕ ДОХОДА ---
 @dp.message(F.text == "➕ Добавить доход")
@@ -207,7 +202,7 @@ async def process_amt(message: Message, state: FSMContext):
         await send_clean(message, "Когда был получен доход? (Дата вводится в формате ГГГГ-ММ-ДД).", reply_markup=date_kb)
         await state.set_state(IncomeStates.waiting_for_date)
     except:
-        await send_clean(message, "Введи число!", reply_markup=cancel_kb)
+        await send_clean(message, "Введи число!")
 
 @dp.message(IncomeStates.waiting_for_rate)
 async def process_rate(message: Message, state: FSMContext):
@@ -216,7 +211,7 @@ async def process_rate(message: Message, state: FSMContext):
         await send_clean(message, "Сколько часов отработали?", reply_markup=cancel_kb)
         await state.set_state(IncomeStates.waiting_for_hours)
     except:
-        await send_clean(message, "Введи число!", reply_markup=cancel_kb)
+        await send_clean(message, "Введи число!")
 
 @dp.message(IncomeStates.waiting_for_hours)
 async def process_hrs(message: Message, state: FSMContext):
@@ -227,7 +222,7 @@ async def process_hrs(message: Message, state: FSMContext):
         await send_clean(message, f"Итого: {amount:g} руб.\nКогда был получен доход?", reply_markup=date_kb)
         await state.set_state(IncomeStates.waiting_for_date)
     except:
-        await send_clean(message, "Введи число!", reply_markup=cancel_kb)
+        await send_clean(message, "Введи число!")
 
 @dp.message(IncomeStates.waiting_for_date)
 async def process_date(message: Message, state: FSMContext):
@@ -237,7 +232,7 @@ async def process_date(message: Message, state: FSMContext):
     else:
         try: target_date = datetime.strptime(text, "%Y-%m-%d").strftime("%Y-%m-%d")
         except:
-            await send_clean(message, "Неверный формат. Выбери кнопку или введи ГГГГ-ММ-ДД:", reply_markup=date_kb)
+            await send_clean(message, "Неверный формат. Выбери кнопку или введи ГГГГ-ММ-ДД:")
             return
 
     await state.update_data(chosen_date=target_date)
@@ -258,10 +253,25 @@ async def process_date(message: Message, state: FSMContext):
 async def save_income(message: Message, state: FSMContext):
     data = await state.get_data()
     cursor.execute("INSERT INTO income (user_id, amount, category, payment_type, rate, hours, date) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                   (message.from_user.id, data['amount'], message.text, data.get('payment_type', '💰 Фиксированная сумма'), data.get('rate', 0), data.get('hours', 0), data['chosen_date']))
+                   (message.from_user.id, data['amount'], message.text.strip().capitalize(), data.get('payment_type', '💰 Фиксированная сумма'), data.get('rate', 0), data.get('hours', 0), data['chosen_date']))
     conn.commit()
-    await send_clean(message, f"✅ Успешно сохранено: {data['amount']:g} руб. ({message.text})", reply_markup=main_kb)
+    await send_clean(message, f"✅ Успешно сохранено: {data['amount']:g} руб. ({message.text.strip().capitalize()})", reply_markup=main_kb)
     await state.clear()
+
+# --- УМНЫЙ ФОРМАТЕР СТАТИСТИКИ (Всегда с категориями) ---
+def format_stats(rows, title):
+    if not rows:
+        return f"📊 <b>{title}</b>\n\nЗаписей пока нет."
+    
+    total = sum(row[1] for row in rows)
+    text = f"📊 <b>{title}</b>\n\n"
+    
+    for cat, amt in rows:
+        percent = (amt / total) * 100 if total > 0 else 0
+        text += f"▪️ <b>{cat}</b>: {amt:g} руб. <i>({percent:.1f}%)</i>\n"
+        
+    text += f"\n💰 <b>Всего заработано: {total:g} руб.</b>"
+    return text
 
 # --- СТАТИСТИКА И ГРАФИКИ ---
 @dp.message(F.text == "📈 График доходов")
@@ -281,7 +291,13 @@ async def send_graph(message: Message):
     buf.seek(0)
     plt.close()
     
-    await clean_previous(message)
+    # Очищаем чат перед отправкой графика
+    try: await message.delete()
+    except: pass
+    if message.from_user.id in user_last_msg:
+        try: await message.bot.delete_message(chat_id=message.from_user.id, message_id=user_last_msg[message.from_user.id])
+        except: pass
+
     msg = await message.answer_photo(photo=BufferedInputFile(buf.getvalue(), filename="chart.png"), caption="📊 Ваша финансовая картина:", reply_markup=main_kb)
     user_last_msg[message.from_user.id] = msg.message_id
 
@@ -289,34 +305,53 @@ async def send_graph(message: Message):
 async def stats_menu(message: Message):
     await send_clean(message, "Какую статистику показать?", reply_markup=stats_kb)
 
-@dp.message(F.text == "📂 По категориям")
-async def stats_categories(message: Message):
-    cursor.execute("SELECT category, SUM(amount) FROM income WHERE user_id = ? GROUP BY category ORDER BY SUM(amount) DESC", (message.from_user.id,))
-    rows = cursor.fetchall()
-    if not rows:
-        await send_clean(message, "У вас пока нет записей.", reply_markup=main_kb)
-        return
-    total = sum(row[1] for row in rows)
-    text = "📊 <b>Статистика по категориям:</b>\n\n"
-    for cat, amt in rows:
-        percent = (amt / total) * 100 if total > 0 else 0
-        text += f"▪️ <b>{cat}</b>: {amt:g} руб. <i>({percent:.1f}%)</i>\n"
-    text += f"\n💰 <b>Всего заработано: {total:g} руб.</b>"
-    await send_clean(message, text, reply_markup=main_kb)
-
 @dp.message(F.text == "🌍 За все время")
 async def stats_all(message: Message):
-    cursor.execute("SELECT SUM(amount) FROM income WHERE user_id = ?", (message.from_user.id,))
-    res = cursor.fetchone()[0] or 0
-    await send_clean(message, f"Всего: {res:g} руб.", reply_markup=main_kb)
+    cursor.execute("SELECT category, SUM(amount) FROM income WHERE user_id = ? GROUP BY category ORDER BY SUM(amount) DESC", (message.from_user.id,))
+    rows = cursor.fetchall()
+    await send_clean(message, format_stats(rows, "Статистика за всё время"), reply_markup=main_kb)
 
-@dp.message(F.text.in_(["📅 За этот month", "📅 За этот месяц"]))
-async def stats_month(message: Message):
-    cursor.execute("SELECT SUM(amount) FROM income WHERE user_id = ? AND date LIKE ?", (message.from_user.id, datetime.now().strftime("%Y-%m") + "%"))
-    res = cursor.fetchone()[0] or 0
-    await send_clean(message, f"За этот месяц: {res:g} руб.", reply_markup=main_kb)
+@dp.message(F.text == "📅 Текущий месяц")
+async def stats_current_month(message: Message):
+    current_month = datetime.now().strftime("%Y-%m")
+    cursor.execute("SELECT category, SUM(amount) FROM income WHERE user_id = ? AND date LIKE ? GROUP BY category ORDER BY SUM(amount) DESC", (message.from_user.id, current_month + "%"))
+    rows = cursor.fetchall()
+    await send_clean(message, format_stats(rows, f"Статистика за {current_month}"), reply_markup=main_kb)
 
-@dp.message(F.text == "🔍 На определенную дату")
+# --- НОВОЕ: ВЫБОР ИСТОРИЧЕСКОГО МЕСЯЦА ---
+@dp.message(F.text == "🗓 Выбрать месяц")
+async def stats_choose_month(message: Message, state: FSMContext):
+    # Достаем из базы только те месяцы, в которых реально есть записи (формат ГГГГ-ММ)
+    cursor.execute("SELECT DISTINCT strftime('%Y-%m', date) FROM income WHERE user_id = ? ORDER BY date DESC", (message.from_user.id,))
+    months = cursor.fetchall()
+    
+    if not months:
+        await send_clean(message, "У вас пока нет записей в базе.", reply_markup=main_kb)
+        return
+        
+    builder = ReplyKeyboardBuilder()
+    for m in months:
+        builder.add(KeyboardButton(text=m[0])) # Кнопка типа "2026-08"
+    builder.add(KeyboardButton(text="🚫 Отмена"))
+    builder.adjust(2)
+    
+    await send_clean(message, "Выберите месяц для просмотра:", reply_markup=builder.as_markup(resize_keyboard=True))
+    await state.set_state(IncomeStates.waiting_for_stats_month)
+
+@dp.message(IncomeStates.waiting_for_stats_month)
+async def process_stats_month(message: Message, state: FSMContext):
+    target_month = message.text.strip()
+    # Проверка формата ГГГГ-ММ
+    if not re.match(r'^\d{4}-\d{2}$', target_month):
+        await send_clean(message, "Пожалуйста, используйте кнопки на клавиатуре:", reply_markup=cancel_kb)
+        return
+        
+    cursor.execute("SELECT category, SUM(amount) FROM income WHERE user_id = ? AND date LIKE ? GROUP BY category ORDER BY SUM(amount) DESC", (message.from_user.id, target_month + "%"))
+    rows = cursor.fetchall()
+    await send_clean(message, format_stats(rows, f"Статистика за {target_month}"), reply_markup=main_kb)
+    await state.clear()
+
+@dp.message(F.text == "🔍 На дату")
 async def stats_date_init(message: Message, state: FSMContext):
     await send_clean(message, "Введите дату в формате ГГГГ-ММ-ДД (например, 2026-07-07):", reply_markup=cancel_kb)
     await state.set_state(IncomeStates.waiting_for_stats_date)
@@ -327,12 +362,12 @@ async def process_stats_date(message: Message, state: FSMContext):
     try:
         target_date = datetime.strptime(text, "%Y-%m-%d").strftime("%Y-%m-%d")
     except:
-        await send_clean(message, "Неверный формат. Введи год-месяц-день (ГГГГ-ММ-ДД):", reply_markup=cancel_kb)
+        await send_clean(message, "Неверный формат. Введи год-месяц-день (ГГГГ-ММ-ДД):")
         return
 
-    cursor.execute("SELECT SUM(amount) FROM income WHERE user_id = ? AND date = ?", (message.from_user.id, target_date))
-    res = cursor.fetchone()[0] or 0
-    await send_clean(message, f"📈 За {target_date} заработано: {res:g} руб.", reply_markup=main_kb)
+    cursor.execute("SELECT category, SUM(amount) FROM income WHERE user_id = ? AND date = ? GROUP BY category ORDER BY SUM(amount) DESC", (message.from_user.id, target_date))
+    rows = cursor.fetchall()
+    await send_clean(message, format_stats(rows, f"Статистика за {target_date}"), reply_markup=main_kb)
     await state.clear()
 
 # --- УМНЫЙ БЫСТРЫЙ ВВОД ---
