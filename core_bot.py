@@ -22,7 +22,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.client.session.aiohttp import AiohttpSession
 
 # --- НАСТРОЙКИ ---
-TOKEN = "8741563337:AAF7q_JraT_-FdOghLOeS7Aos4Kehm31A6g"
+TOKEN = "8741563337:AAF7YTIRloXz_GbEZlL40luGY8rfq50xefU"
 SECRET_PATH = '/webhook_a1b2c3d4e5'
 WEBHOOK_URL = f"https://veterr.pythonanywhere.com{SECRET_PATH}"
 
